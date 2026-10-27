@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1a2e26">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TRF Map">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>TRF Map</title>
+<style>
+  :root {
+    --ink: #12211c;
+    --panel: #1a2e26;
+    --hairline: #395047;
+    --parchment: #eee6d3;
+    --dim: #a9b8ae;
+    --brass: #c9a86a;
+    --you: #2f8f4e;
+    --you-ring: rgba(47,143,78,0.28);
+    --warn: #e0a458;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--ink); color: var(--parchment);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden;
+    overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+  #stage { position: fixed; inset: 0; touch-action: none; overflow: hidden; background: var(--ink); }
+  #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+  #map { display: block; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
+  .marker { position: absolute; width: 0; height: 0; display: none; }
+  .marker.on { display: block; }
+  #acc { position: absolute; border-radius: 50%; background: var(--you-ring);
+    border: 1px solid var(--you); transform: translate(-50%, -50%); }
+  #dot { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%;
+    transform: scale(var(--inv, 1));
+    background: var(--you); border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.5); }
+  #arrow { position: absolute; left: 0; top: 0; width: 0; height: 0; display: none;
+    transform: rotate(var(--rot, 0deg)) scale(var(--inv, 1)); }
+  #arrow.on { display: block; }
+  #arrow svg { position: absolute; left: -17px; top: -50px; width: 34px; height: 42px; overflow: visible; }
+
+  .bar { position: fixed; left: 0; right: 0; z-index: 5; display: flex; gap: 10px; align-items: center;
+    padding-left: max(14px, env(safe-area-inset-left, 0px)); padding-right: max(14px, env(safe-area-inset-right, 0px)); }
+  #top { top: 0; padding-top: calc(env(safe-area-inset-top, 0px) + 10px); padding-bottom: 10px;
+    background: linear-gradient(to bottom, rgba(18,33,28,.88), rgba(18,33,28,0)); pointer-events: none; }
+  #status { font-size: 13px; line-height: 1.35; color: var(--parchment); text-shadow: 0 1px 3px #000; }
+  #status b { font-weight: 600; }
+  #bottom { bottom: 0; padding-top: 12px; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+    justify-content: flex-end; pointer-events: none; }
+  .btn { pointer-events: auto; appearance: none; border: 1px solid var(--hairline); background: var(--panel);
+    color: var(--parchment); font: 600 15px/1 -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 48px; padding: 0 18px; border-radius: 24px; box-shadow: 0 2px 10px rgba(0,0,0,.45); cursor: pointer; }
+  .btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+  .btn.primary { background: var(--you); border-color: #5fc080; color: #fff; }
+  .btn.following { background: var(--brass); border-color: var(--brass); color: #20180a; }
+  .btn.icon { width: 48px; padding: 0; font-size: 22px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="world">
+    <img id="map" src="map.jpg" alt="Texas Renaissance Festival map" draggable="false">
+    <div class="marker" id="marker">
+      <div id="acc"></div>
+      <div id="arrow"><svg viewBox="0 0 34 42"><path d="M17 0 L34 42 L17 32 L0 42 Z" fill="#2f8f4e" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg></div>
+      <div id="dot"></div>
+    </div>
+  </div>
+</div>
+
+<div class="bar" id="top"><div id="status">Tap <b>Find me</b> to show your position.</div></div>
+<div class="bar" id="bottom">
+  <button class="btn icon" id="fit" aria-label="Show whole map">&#x2922;</button>
+  <button class="btn primary" id="find">Find me</button>
+</div>
+
+<script>
+(function () {
+  // Calibration from the six tie points saved by Custom Maps (least-squares fit).
+  // pixel -> geo:  lon = a*x + b*y + c ;  lat = d*x + e*y + f
+  var IMG_W = 2000, IMG_H = 1294;
+  var A = {a:-1.1744582711928888e-07,b:4.63298527978848e-06,c:-95.84223883491136,d:3.6758233736148803e-06,e:7.528573178399607e-08,f:30.250962841179554};
+  var DET = A.a * A.e - A.b * A.d;
+
+  function geoToPixel(lat, lon) {
+    return {
+      x: (A.e * (lon - A.c) - A.b * (lat - A.f)) / DET,
+      y: (-A.d * (lon - A.c) + A.a * (lat - A.f)) / DET
+    };
+  }
+  // Direction of real-world north on the image, in degrees clockwise from the top of the screen.
+  var NORTH_ANGLE = Math.atan2(-A.b / DET, -(A.a / DET)) * 180 / Math.PI;
+  window.__northAngle = NORTH_ANGLE;
+
+  var stage = document.getElementById('stage');
+  var world = document.getElementById('world');
+  var img = document.getElementById('map');
+  var marker = document.getElementById('marker');
+  var acc = document.getElementById('acc');
+  var arrow = document.getElementById('arrow');
+  var statusEl = document.getElementById('status');
+  var findBtn = document.getElementById('find');
+  var fitBtn = document.getElementById('fit');
+
+  world.style.width = IMG_W + 'px';
+  world.style.height = IMG_H + 'px';
+
+  var view = { s: 1, tx: 0, ty: 0 };
+  var minS = 0.1, maxS = 4;
+
+  function apply() {
+    world.style.transform = 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.s + ')';
+    world.style.setProperty('--inv', String(1 / view.s));
+  }
+  function fitView() {
+    var w = stage.clientWidth, h = stage.clientHeight;
+    var s = Math.min(w / IMG_W, h / IMG_H);
+    minS = s * 0.9;
+    view.s = s;
+    view.tx = (w - IMG_W * s) / 2;
+    view.ty = (h - IMG_H * s) / 2;
+    apply();
+  }
+  function zoomAt(cx, cy, factor) {
+    var ns = Math.max(minS, Math.min(maxS, view.s * factor));
+    var f = ns / view.s;
+    view.tx = cx - (cx - view.tx) * f;
+    view.ty = cy - (cy - view.ty) * f;
+    view.s = ns;
+    apply();
+  }
+  function centerOn(px, py, minScale) {
+    if (minScale && view.s < minScale) view.s = minScale;
+    view.tx = stage.clientWidth / 2 - px * view.s;
+    view.ty = stage.clientHeight / 2 - py * view.s;
+    apply();
+  }
+
+  // Pan, pinch, and tap
+  var ptrs = new Map();
+  var last = null;
+  stage.addEventListener('pointerdown', function (e) {
+    stage.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    last = snapshot();
+    setFollow(false);
+  });
+  stage.addEventListener('pointermove', function (e) {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    var now = snapshot();
+    if (last && now) {
+      view.tx += now.cx - last.cx;
+      view.ty += now.cy - last.cy;
+      if (now.n > 1 && last.n === now.n && last.d > 0) {
+        var f = now.d / last.d;
+        var ns = Math.max(minS, Math.min(maxS, view.s * f));
+        var k = ns / view.s;
+        view.tx = now.cx - (now.cx - view.tx) * k;
+        view.ty = now.cy - (now.cy - view.ty) * k;
+        view.s = ns;
+      }
+      apply();
+    }
+    last = now;
+  });
+  function endPtr(e) {
+    ptrs.delete(e.pointerId);
+    last = snapshot();
+  }
+  stage.addEventListener('pointerup', endPtr);
+  stage.addEventListener('pointercancel', endPtr);
+  function snapshot() {
+    var a = Array.from(ptrs.values());
+    if (!a.length) return null;
+    var cx = 0, cy = 0;
+    a.forEach(function (p) { cx += p.x; cy += p.y; });
+    cx /= a.length; cy /= a.length;
+    var d = 0;
+    if (a.length > 1) d = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+    return { n: a.length, cx: cx, cy: cy, d: d };
+  }
+  stage.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+  }, { passive: false });
+  stage.addEventListener('dblclick', function (e) { zoomAt(e.clientX, e.clientY, 1.8); });
+
+  // Marker and arrow
+  var lastPix = null;
+  function metersPerPixel() {
+    var dlat = A.d * 111320, dlon = A.a * 111320 * Math.cos(30.25 * Math.PI / 180);
+    return Math.hypot(dlat, dlon);
+  }
+  function placeMarker(p, accuracyM) {
+    lastPix = p;
+    var inside = p.x >= -40 && p.y >= -40 && p.x <= IMG_W + 40 && p.y <= IMG_H + 40;
+    marker.style.left = p.x + 'px';
+    marker.style.top = p.y + 'px';
+    marker.classList.toggle('on', inside);
+    var r = Math.max(accuracyM / metersPerPixel(), 0);
+    acc.style.width = acc.style.height = (r * 2) + 'px';
+    return inside;
+  }
+  var arrowAngle = null;  // degrees clockwise from the top of the screen
+  function setArrow(deg, smooth) {
+    if (deg === null) { arrow.classList.remove('on'); arrowAngle = null; return; }
+    if (smooth && arrowAngle !== null) {
+      var diff = ((deg - arrowAngle + 540) % 360) - 180;
+      deg = arrowAngle + diff * 0.3;
+    }
+    arrowAngle = (deg + 360) % 360;
+    arrow.style.setProperty('--rot', arrowAngle + 'deg');
+    arrow.classList.add('on');
+  }
+
+  // Real GPS
+  var watchId = null, following = false, wakeLock = null;
+  var compassActive = false;
+
+  function setFollow(on) {
+    following = on;
+    findBtn.classList.toggle('following', on);
+    findBtn.classList.toggle('primary', !on);
+    findBtn.textContent = on ? 'Following' : 'Find me';
+  }
+
+  function onPos(pos) {
+    var c = pos.coords;
+    var inside = placeMarker(geoToPixel(c.latitude, c.longitude), c.accuracy);
+    if (!compassActive) {
+      if (typeof c.heading === 'number' && !isNaN(c.heading) && (c.speed || 0) > 0.6) {
+        setArrow(c.heading + NORTH_ANGLE, true);
+      } else if (!arrow.classList.contains('on')) {
+        setArrow(null);
+      }
+    }
+    if (inside) {
+      statusEl.innerHTML = 'GPS accuracy <b>about ' + Math.round(c.accuracy * 3.281) + ' ft</b>';
+      if (following) centerOn(lastPix.x, lastPix.y, Math.max(view.s, 0.9));
+    } else {
+      statusEl.innerHTML = '<span style="color:var(--warn)">You are outside the map area.</span> Lat ' +
+        c.latitude.toFixed(5) + ', Lon ' + c.longitude.toFixed(5);
+    }
+  }
+  function onErr(err) {
+    statusEl.textContent = err.code === 1
+      ? 'Location is turned off for this page. Allow location in your browser or phone settings, then tap Find me.'
+      : 'Waiting for a GPS signal. Try moving to open sky.';
+  }
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && watchId !== null) keepAwake();
+  });
+
+  // Compass
+  var compassStarted = false, lastCompassT = 0;
+  function screenAngle() { return (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0); }
+  function onOrient(e) {
+    var now = Date.now();
+    if (now - lastCompassT < 80) return;
+    var heading = null;
+    if (typeof e.webkitCompassHeading === 'number') heading = e.webkitCompassHeading;
+    else if (e.absolute && typeof e.alpha === 'number') heading = (360 - e.alpha) % 360;
+    if (heading === null || screenAngle() !== 0) return;  // compass only used with the phone upright
+    lastCompassT = now;
+    compassActive = true;
+    setArrow(heading + NORTH_ANGLE, true);
+  }
+  window.__onOrient = onOrient;
+  async function startCompass() {
+    if (compassStarted) return;
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        var res = await DeviceOrientationEvent.requestPermission();
+        if (res !== 'granted') return;
+        window.addEventListener('deviceorientation', onOrient);
+      } else if ('ondeviceorientationabsolute' in window) {
+        window.addEventListener('deviceorientationabsolute', onOrient);
+      } else if ('ondeviceorientation' in window) {
+        window.addEventListener('deviceorientation', onOrient);
+      } else { return; }
+      compassStarted = true;
+    } catch (e) {}
+  }
+
+  findBtn.addEventListener('click', function () {
+    if (!navigator.geolocation) { statusEl.textContent = 'This browser does not support location.'; return; }
+    startCompass();
+    if (watchId === null) {
+      statusEl.textContent = 'Looking for your position…';
+      watchId = navigator.geolocation.watchPosition(onPos, onErr,
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+      keepAwake();
+    }
+    setFollow(true);
+    if (lastPix) centerOn(lastPix.x, lastPix.y, Math.max(view.s, 0.9));
+  });
+  fitBtn.addEventListener('click', function () { setFollow(false); fitView(); });
+
+
+  window.addEventListener('resize', function () { if (!following) fitView(); });
+  img.addEventListener('load', fitView);
+  fitView();
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  }
+})();
+</script>
+</body>
+</html>
