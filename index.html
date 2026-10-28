@@ -81,8 +81,8 @@
 (function () {
   // Calibration from the six tie points saved by Custom Maps (least-squares fit).
   // pixel -> geo:  lon = a*x + b*y + c ;  lat = d*x + e*y + f
-  var IMG_W = 2000, IMG_H = 1294;
-  var A = {a:-1.1744582711928888e-07,b:4.63298527978848e-06,c:-95.84223883491136,d:3.6758233736148803e-06,e:7.528573178399607e-08,f:30.250962841179554};
+  var IMG_W = 4800, IMG_H = 3106;
+  var A = {a:-4.5893290858952705e-08,b:1.9250261688325765e-06,c:-95.8422288811446,d:1.5301972317751211e-06,e:2.8264010711773354e-08,f:30.250984986374306};
   var DET = A.a * A.e - A.b * A.d;
 
   function geoToPixel(lat, lon) {
@@ -109,7 +109,8 @@
   world.style.height = IMG_H + 'px';
 
   var view = { s: 1, tx: 0, ty: 0 };
-  var minS = 0.1, maxS = 4;
+  var minS = 0.1, maxS = 3;
+  var FOLLOW_ZOOM = 0.9 * 2000 / IMG_W;
 
   function apply() {
     world.style.transform = 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.s + ')';
@@ -240,7 +241,7 @@
     }
     if (inside) {
       statusEl.innerHTML = 'GPS accuracy <b>about ' + Math.round(c.accuracy * 3.281) + ' ft</b>';
-      if (following) centerOn(lastPix.x, lastPix.y, Math.max(view.s, 0.9));
+      if (following) centerOn(lastPix.x, lastPix.y, Math.max(view.s, FOLLOW_ZOOM));
     } else {
       statusEl.innerHTML = '<span style="color:var(--warn)">You are outside the map area.</span> Lat ' +
         c.latitude.toFixed(5) + ', Lon ' + c.longitude.toFixed(5);
@@ -299,7 +300,7 @@
       keepAwake();
     }
     setFollow(true);
-    if (lastPix) centerOn(lastPix.x, lastPix.y, Math.max(view.s, 0.9));
+    if (lastPix) centerOn(lastPix.x, lastPix.y, Math.max(view.s, FOLLOW_ZOOM));
   });
   fitBtn.addEventListener('click', function () { setFollow(false); fitView(); });
 
